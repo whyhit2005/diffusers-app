@@ -1,0 +1,35 @@
+base:
+  work_dir: diffusers_loras/wangxj-30
+  task_name: test
+  images_dir_name: images
+  model_dir_name: models
+  sample_dir_name: samples
+  log_dir_name: logs
+train:
+  pretrained_model_name_or_path: stabilityai/stable-diffusion-xl-base-1.0
+  add_vae: true
+  pretrained_vae_model_name_or_path: madebyollin/sdxl-vae-fp16-fix
+  token_abstraction: <s0><s1>
+  subfolders: true
+  max_train_steps: 1000
+  validation_prompt: null
+  init_new: true
+  train_batch_size: 5
+  rank: 128
+  conv_rank: 64
+  checkpointing_steps: 100
+  prodigy: true
+  seed: 0
+infer:
+  prompt: null
+  negative_prompt: null
+  sample_num: 3
+  infer_steps: 50
+  subfolders: true
+  sub_range : null
+  checkpoint: null
+  init_new : true
+  pretrained_model_name_or_path: stabilityai/stable-diffusion-xl-base-1.0
+  add_vae: false
+  pretrained_vae_model_name_or_path: madebyollin/sdxl-vae-fp16-fix
+  prompt_file : prompts/boys1.json

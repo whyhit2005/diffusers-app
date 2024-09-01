@@ -7,147 +7,130 @@ import argparse
 import warnings
 import datetime
 import logging
+logging.basicConfig(level=logging.INFO)
+from omegaconf import OmegaConf
+import yaml
 
 def parse_args(input_args=None):
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
-    parser.add_argument("--work_dir", type=str,
-                        default="", required=True,
-                        help="images, model, working path")
-    parser.add_argument("--pretrained_model_name_or_path", type=str,
-                        default="stabilityai/stable-diffusion-xl-base-1.0",
-                        help="pretrained model")
-    parser.add_argument("--no_add_vae", action="store_true",
-                        default=False,
-                        help="no add vae")
-    parser.add_argument("--subfolders", action="store_true",
-                        default=False,
-                        help="process subfolders")
-    parser.add_argument("--max_train_steps", type=int,
-                        default=1000,
-                        help="max train steps")
-    parser.add_argument("--validation_prompt", type=str,
-                        default=None,
-                        help="validation prompt suffix")
-    parser.add_argument("--init_new", action="store_true",
-                        default=False,
-                        help="initialize new training")
-    parser.add_argument("--train_batch_size", type=int,
-                        default=1,
-                        help="batch size")
-    parser.add_argument("--rank", type=int,
-                        default=64,
-                        help="rank")
-    parser.add_argument("--conv_rank", type=int,
-                        default=0,
-                        help="conv rank")
-    parser.add_argument("--checkpointing_steps", type=int,
-                        default=100,
-                        help="checkpointing steps")
-    parser.add_argument("--prodigy", action="store_true",
-                        default=False,
-                        help="use prodigy optimizer")
-    
+    parser.add_argument("cfg_file", type=str,
+                        help="config file")
     return parser.parse_args(input_args)
 
-def train_process(args):
-    logging.basicConfig(level=logging.INFO)
-    work_dir = Path(args.work_dir)
+def load_config_yaml(args):
+    cfg_file = args.cfg_file
+    with open(cfg_file, "r") as f:
+        cfg_data = yaml.safe_load(f)
+        t_data = {}
+        t_data.update(cfg_data["base"])
+        t_data.update(cfg_data["train"])
+        cfg = OmegaConf.create(t_data)
+    return cfg
+
+def train_process(cfg_args):
+    if not cfg_args.work_dir:
+        raise ValueError("work_dir is not set")
+    
+    work_dir = Path(cfg_args.work_dir)
     dirlist = []
-    if args.subfolders:
+    if cfg_args.subfolders:
         dirlist = list(work_dir.iterdir())
     else:
         dirlist = [work_dir]
     dirlist = sorted(dirlist, key=lambda x: x.name)
 
     for tdir in dirlist:
-        instance = "<s0><s1>"
-        token_abstraction = instance
-        model_dir = tdir / "models"
-        images_dir = tdir / "images"
+        token_abstraction = cfg_args.token_abstraction
+        if cfg_args.task_name:
+            model_dir = tdir / f"{cfg_args.model_dir_name}-{cfg_args.task_name}"
+        else:
+            model_dir = tdir / cfg_args.model_dir_name
+        images_dir = tdir / cfg_args.images_dir_name
         logging_dir = tdir / "logs"
         
-        if args.init_new and os.path.exists(model_dir):
+        if cfg_args.init_new and os.path.exists(model_dir):
             shutil.rmtree(model_dir)
-        if args.init_new and os.path.exists(logging_dir):
+        if cfg_args.init_new and os.path.exists(logging_dir):
             shutil.rmtree(logging_dir)
         model_dir.mkdir(parents=True, exist_ok=True)
         logging_dir.mkdir(parents=True, exist_ok=True)
         
-        cmdfile = tdir / "cmd.txt"
+        cmdfile = model_dir / "cmd.txt"
         donefile = model_dir / "done.txt"
         if os.path.exists(donefile) and model_dir.glob("*safetensors"):
-            logging.info(f"{instance} already done, skip")
+            logging.info(f"{token_abstraction} already done, skip")
             continue
         
-        instant_prompt = ""
+        instance_prompt = ""
         metafile = os.path.join(images_dir, "metadata.jsonl")
         with open(metafile, "r") as f:
             lines = f.readlines()
             prompt = json.loads(lines[0])["prompt"]
-            instant_prompt = prompt.split(",")[0]
+            instance_prompt = prompt.split(",")[0]
             
-        if args.validation_prompt and instant_prompt:
-            validation_prompt = f'{instant_prompt}, {args.validation_prompt}'
-            validation_epochs = args.num_train_epochs // 10
+        if cfg_args.validation_prompt and instance_prompt:
+            validation_prompt = f'{instance_prompt}, {cfg_args.validation_prompt}'
+            validation_epochs = cfg_args.num_train_epochs // 10
         else:
             validation_prompt = None
             validation_epochs = 0
         
-        cmdstr = f'accelerate launch train_dreambooth_lora_sdxl_advanced.py'
-        cmdstr += f' --pretrained_model_name_or_path=\"{args.pretrained_model_name_or_path}\"'
-        if args.no_add_vae:
-            cmdstr += f' --pretrained_vae_model_name_or_path="madebyollin/sdxl-vae-fp16-fix"'
-        cmdstr += f' --dataset_name={images_dir}'
-        cmdstr += f' --instance_prompt=\"{instant_prompt}\"'
-        cmdstr += f' --token_abstraction=\"{token_abstraction}\"'
+        pretrained_vae_model_name_or_path = "madebyollin/sdxl-vae-fp16-fix"
+        cmdstr = f'accelerate launch train_dreambooth_lora_sdxl_advanced.py \\\n'
+        cmdstr += f' --pretrained_model_name_or_path={cfg_args.pretrained_model_name_or_path} \\\n'
+        if cfg_args.add_vae:
+            cmdstr += f' --pretrained_vae_model_name_or_path={pretrained_vae_model_name_or_path} \\\n'
+        cmdstr += f' --dataset_name={images_dir} \\\n'
+        cmdstr += f' --instance_prompt=\"{instance_prompt}\" \\\n'
+        cmdstr += f' --token_abstraction=\"{token_abstraction}\" \\\n'
         if validation_prompt:
-            cmdstr += f' --validation_prompt=\"{validation_prompt}\"'
-            cmdstr += f' --validation_epochs={validation_epochs}'
-        cmdstr += f' --output_dir={model_dir}'
-        cmdstr += f' --logging_dir={logging_dir}'
-        cmdstr += f' --caption_column="prompt"'
-        cmdstr += f' --mixed_precision="bf16"'
-        cmdstr += f' --resolution=1024'
-        cmdstr += f' --train_batch_size={args.train_batch_size}'
-        cmdstr += f' --repeats=1'
-        cmdstr += f' --report_to="wandb"'
-        cmdstr += f' --gradient_accumulation_steps=1'
-        cmdstr += f' --gradient_checkpointing'
-        if args.prodigy:
-            cmdstr += f' --learning_rate=1.0'
-            cmdstr += f' --text_encoder_lr=1.0'
-            cmdstr += f' --optimizer="prodigy"'
-            cmdstr += f' --prodigy_safeguard_warmup=True'
-            cmdstr += f' --prodigy_use_bias_correction=True'
-            cmdstr += f' --lr_scheduler="cosine"'
-            cmdstr += f' --lr_warmup_steps=0'
+            cmdstr += f' --validation_prompt=\"{validation_prompt}\" \\\n'
+            cmdstr += f' --validation_epochs={validation_epochs} \\\n'
+        cmdstr += f' --output_dir={model_dir} \\\n'
+        cmdstr += f' --logging_dir={logging_dir} \\\n'
+        cmdstr += f' --caption_column="prompt" \\\n'
+        cmdstr += f' --mixed_precision="bf16" \\\n'
+        cmdstr += f' --resolution=1024 \\\n'
+        cmdstr += f' --train_batch_size={cfg_args.train_batch_size} \\\n'
+        cmdstr += f' --repeats=1 \\\n'
+        cmdstr += f' --report_to="wandb" \\\n'
+        cmdstr += f' --gradient_accumulation_steps=1 \\\n'
+        cmdstr += f' --gradient_checkpointing \\\n'
+        if cfg_args.prodigy:
+            cmdstr += f' --learning_rate=1.0 \\\n'
+            cmdstr += f' --text_encoder_lr=1.0 \\\n'
+            cmdstr += f' --optimizer="prodigy" \\\n'
+            cmdstr += f' --prodigy_safeguard_warmup=True \\\n'
+            cmdstr += f' --prodigy_use_bias_correction=True \\\n'
+            cmdstr += f' --lr_scheduler="constant" \\\n'
+            cmdstr += f' --lr_warmup_steps=0 \\\n'
         else:
-            cmdstr += f' --learning_rate=1e-4'
-            cmdstr += f' --text_encoder_lr=1e-5'
-            cmdstr += f' --optimizer="Adamw"'
-            cmdstr += f' --lr_scheduler="cosine"'
-            cmdstr += f' --lr_warmup_steps=0'
-        cmdstr += f' --adam_weight_decay=0.01'
-        cmdstr += f' --adam_beta1=0.9 --adam_beta2=0.99'
-        cmdstr += f' --train_text_encoder_ti'
-        cmdstr += f' --train_text_encoder_ti_frac=0.5'
-        cmdstr += f' --snr_gamma=5.0'
-        cmdstr += f' --rank={args.rank}'
-        cmdstr += f' --conv_rank={args.conv_rank}'
-        cmdstr += f' --max_train_steps={args.max_train_steps}'
-        cmdstr += f' --checkpoints_total_limit=2'
-        cmdstr += f' --checkpointing_steps={args.checkpointing_steps}'
-        cmdstr += f' --resume_from_checkpoint=latest'
-        cmdstr += f' --allow_tf32'
-        cmdstr += f' --enable_xformers_memory_efficient_attention'
-        cmdstr += f' --seed=0'
+            cmdstr += f' --learning_rate=1e-4 \\\n'
+            cmdstr += f' --text_encoder_lr=1e-5 \\\n'
+            cmdstr += f' --optimizer="Adamw" \\\n'
+            cmdstr += f' --lr_scheduler="cosine" \\\n'
+            cmdstr += f' --lr_warmup_steps=0 \\\n'
+        cmdstr += f' --adam_weight_decay=0.01 \\\n'
+        cmdstr += f' --adam_beta1=0.9 --adam_beta2=0.99 \\\n'
+        cmdstr += f' --train_text_encoder_ti \\\n'
+        cmdstr += f' --train_text_encoder_ti_frac=0.5 \\\n'
+        cmdstr += f' --snr_gamma=5.0 \\\n'
+        cmdstr += f' --rank={cfg_args.rank} \\\n'
+        cmdstr += f' --conv_rank={cfg_args.conv_rank} \\\n'
+        cmdstr += f' --max_train_steps={cfg_args.max_train_steps} \\\n'
+        cmdstr += f' --checkpoints_total_limit=2 \\\n'
+        cmdstr += f' --checkpointing_steps={cfg_args.checkpointing_steps} \\\n'
+        cmdstr += f' --resume_from_checkpoint=latest \\\n'
+        cmdstr += f' --allow_tf32 \\\n'
+        cmdstr += f' --enable_xformers_memory_efficient_attention \\\n'
+        cmdstr += f' --seed={cfg_args.seed}'
         
         with open(cmdfile, "w") as f:
             f.write(cmdstr)
         start_time = datetime.datetime.now()
         ret = os.system(cmdstr)
         if ret != 0:
-            warnings.warn(f"{instance} Lora training failed")
+            warnings.warn(f"{token_abstraction} Lora training failed")
             return ret
         end_time = datetime.datetime.now()
         with open(donefile, "w") as f:
@@ -182,7 +165,8 @@ def infer_after(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    ret = train_process(args)
+    cfg_args = load_config_yaml(args)
+    ret = train_process(cfg_args)
     # if ret == 0:
     #     ret = infer_after(args)
     sys.exit(ret)

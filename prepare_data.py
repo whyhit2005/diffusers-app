@@ -166,8 +166,8 @@ if __name__ == "__main__":
     
     if args.interrogator == "blip":
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        blip_processor = AutoProcessor.from_pretrained("Salesforce/blip2-opt-2.7b")
-        blip_model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-opt-2.7b", torch_dtype=torch.float16)
+        blip_processor = AutoProcessor.from_pretrained("Salesforce/blip2-opt-2.7b-coco")
+        blip_model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-opt-2.7b-coco", torch_dtype=torch.float16)
         blip_model = blip_model.to(device)
         ret = main(args)
     elif args.interrogator == "wd14":

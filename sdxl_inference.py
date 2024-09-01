@@ -14,54 +14,28 @@ import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(sys.stdout))
+from omegaconf import OmegaConf
+import yaml
 
 def parse_args(input_args=None):
-    parser = argparse.ArgumentParser(description="Simple example of a training script.")
-    parser.add_argument("--work_dir", type=str,
-                        default=None, required=True,
-                        help="images, model, working path")
-    parser.add_argument("--prompt", type=str,
-                        default=None,
-                        help="validation prompt")
-    parser.add_argument("--negative_prompt", type=str,
-                        default=None,
-                        help="negative prompt")
-    parser.add_argument("--sample_dir", type=str,
-                        default="samples",
-                        help="sample directory")
-    parser.add_argument("--sample_num", type=int,
-                        default=3,
-                        help="sample number")
-    parser.add_argument("--infer_steps", type=int,
-                        default=50,
-                        help="inference steps")
-    parser.add_argument("--subfolders", action="store_true",
-                        default=False,
-                        help="use subfolder")
-    parser.add_argument("--sub_range", type=str,
-                        default=None,
-                        help="subfolder range")
-    parser.add_argument("--checkpoint", type=int,
-                        default=-1,
-                        help="use checkpoint from i")
-    parser.add_argument("--init_new", action="store_true",
-                        default=False,
-                        help="initialize new folder")
-    parser.add_argument("--pretrained_model_name_or_path", type=str,
-                        default="stabilityai/stable-diffusion-xl-base-1.0",
-                        help="pretrained model")
-    parser.add_argument("--no_add_vae", action="store_true",
-                    default=False,
-                    help="no add vae")
-    parser.add_argument("--from_file", type=str,
-                        default=None,
-                        help="from file")
+    parser = argparse.ArgumentParser(description="Simple example of a sdxl text to images script.")
+    parser.add_argument("cfg_file", type=str,
+                        help="config file")
     return parser.parse_args(input_args)
 
-def load_base_model(args):
-    if Path(args.pretrained_model_name_or_path).is_file():
+def load_config_yaml(args):
+    with open(args.cfg_file, "r") as f:
+        cfg_data = yaml.safe_load(f)
+        t_data = {}
+        t_data.update(cfg_data["base"])
+        t_data.update(cfg_data["infer"])
+        cfg_args = OmegaConf.create(t_data)
+        return cfg_args
+
+def load_base_model(cfg_args):
+    if Path(cfg_args.pretrained_model_name_or_path).is_file():
         pipe = StableDiffusionXLPipeline.from_single_file(
-            args.pretrained_model_name_or_path,
+            cfg_args.pretrained_model_name_or_path,
             # vae=vae,
             torch_dtype=torch.float16,
             variant="fp16",
@@ -69,14 +43,15 @@ def load_base_model(args):
         )
     else:
         pipe = StableDiffusionXLPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
+            cfg_args.pretrained_model_name_or_path,
             # vae=vae,
             torch_dtype=torch.float16,
             variant="fp16",
             use_safetensors=True
         )
-    if not args.no_add_vae:
-        vae = AutoencoderKL.from_pretrained("madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.float16)
+    if cfg_args.add_vae:
+        vae = AutoencoderKL.from_pretrained(
+            cfg_args.pretrained_vae_model_name_or_path, torch_dtype=torch.float16)
         pipe.vae = vae
         
     pipe = pipe.to("cuda")
@@ -85,8 +60,8 @@ def load_base_model(args):
     # pipe.enable_freeu(s1=0.9, s2=0.2, b1=1.3, b2=1.4)
     return pipe
 
-def infer(model_dir, sample_dir, prompt_list, args):
-    pipe = load_base_model(args)
+def infer(model_dir, sample_dir, prompt_list, cfg_args):
+    pipe = load_base_model(cfg_args)
     pipe.load_lora_weights(
         str(model_dir), 
         weight_name="pytorch_lora_weights.safetensors",
@@ -123,22 +98,22 @@ def infer(model_dir, sample_dir, prompt_list, args):
     pipe.load_textual_inversion(state_dict["clip_l"], token=neg_tokens, text_encoder=pipe.text_encoder, tokenizer=pipe.tokenizer)
     pipe.load_textual_inversion(state_dict["clip_g"], token=neg_tokens, text_encoder=pipe.text_encoder_2, tokenizer=pipe.tokenizer_2)
     negative_prompt = "".join(neg_tokens)
-    if args.negative_prompt:
-        negative_prompt += f"{args.negative_prompt}"
+    if cfg_args.negative_prompt:
+        negative_prompt += f"{cfg_args.negative_prompt}"
         
-    num_sample = args.sample_num
+    num_sample = cfg_args.sample_num
     logger.info(f"Model:{sample_dir.parent.name} {model_dir.name}")
+    generator = torch.Generator("cuda").manual_seed(cfg_args.seed)
     for i, item in enumerate(prompt_list):
         prompt = item["prompt"]
         seed = item["seed"]
-        generator = torch.Generator("cuda").manual_seed(seed)
         logger.info(f"{i} Prompt: {prompt}")
         images = pipe(
                 prompt=prompt, 
                 # negative_prompt=negative_prompt,
-                num_inference_steps=args.infer_steps, 
-                num_images_per_prompt = args.sample_num,
-                guidance_scale = 3.0,
+                num_inference_steps=cfg_args.infer_steps, 
+                num_images_per_prompt = cfg_args.sample_num,
+                guidance_scale = 5.0,
                 # cross_attention_kwargs={"scale": 1.0},
                 height = 1024, width = 1024,
                 generator=generator,
@@ -153,11 +128,13 @@ def infer(model_dir, sample_dir, prompt_list, args):
     
     del pipe
     
-def main(args):
+def main(cfg_args):
+    if cfg_args.work_dir is None:
+        raise ValueError("work directory is not set")
     random.seed(0)
     prompt_list = []
-    if args.from_file:
-        with open(args.from_file, "r") as f:
+    if cfg_args.prompt_file:
+        with open(cfg_args.prompt_file, "r") as f:
             for line in f:
                 line = line.strip()
                 t = json.loads(line)
@@ -165,15 +142,18 @@ def main(args):
                     t["seed"] = random.randint(int(1e6), int(1e7))
                 prompt_list.append(t)
     else:
-        prompt_list = [{"prompt": args.prompt, "seed": random.randint(int(1e6), int(1e7))}]
+        prompt_list = [{
+            "prompt": cfg_args.prompt, 
+            "seed": random.randint(int(1e6), int(1e7))
+            }]
 
-    work_dir = Path(args.work_dir)
+    work_dir = Path(cfg_args.work_dir)
     dirlist = None
-    if args.subfolders:
+    if cfg_args.subfolders:
         dirlist = list(work_dir.iterdir())
         dirlist = sorted(dirlist, key=lambda x: x.name)
-        if args.sub_range:
-            s, e = args.sub_range.split("-")
+        if cfg_args.sub_range:
+            s, e = cfg_args.sub_range.split("-")
             s, e = int(s), int(e)
             s = max(0, s)
             e = min(len(dirlist), e)
@@ -183,22 +163,33 @@ def main(args):
     dirlist = sorted(dirlist, key=lambda x: x.name)
     for cdir in dirlist:
         instance_token = cdir.name.split("-")[-1]
-        model_dir = cdir / "models"
-        model_dirs = [model_dir]
-        checkpoint_dir = sorted(list(model_dir.glob("checkpoint*")))
-        if args.checkpoint > 0 and args.checkpoint < len(checkpoint_dir):
-            model_dirs = checkpoint_dir[args.checkpoint:]
-        model_dirs = sorted(model_dirs, key=lambda x:x.name)
+        if cfg_args.task_name:
+            model_dir = cdir / f"{cfg_args.model_dir_name}-{cfg_args.task_name}"
+        else:
+            model_dir = cdir / cfg_args.model_dir_name
+        if cfg_args.checkpoint:
+            checkpoint_dirs = list(model_dir.glob("checkpoint*"))
+            checkpoint_dirs = sorted(checkpoint_dirs)
+            start_i = cfg_args.checkpoint % len(checkpoint_dirs)
+            model_dirs = checkpoint_dirs[start_i:]
+            model_dirs = sorted(model_dirs, key=lambda x:x.name)
+        else:
+            model_dirs = [model_dir]
         
-        sample_dir = cdir / args.sample_dir
-        if args.init_new:
+        if cfg_args.task_name:
+            sample_dir = cdir / f"{cfg_args.sample_dir_name}-{cfg_args.task_name}"
+        else:
+            sample_dir = cdir / cfg_args.sample_dir_name
+        if cfg_args.init_new:
             shutil.rmtree(str(sample_dir), ignore_errors=True)
         sample_dir.mkdir(parents=True, exist_ok=True)
         
         for mdir in model_dirs:
-            infer(mdir, sample_dir, prompt_list, args)
+            infer(mdir, sample_dir, prompt_list, cfg_args)
     return 0
 
 if __name__ == "__main__":
     args = parse_args()
-    sys.exit(main(args))
+    cfg_args = load_config_yaml(args)
+    ret = main(cfg_args)
+    sys.exit(ret)
