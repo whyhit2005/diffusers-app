@@ -61,13 +61,7 @@ def train_process(cfg_args):
             logging.info(f"{token_abstraction} already done, skip")
             continue
         
-        instance_prompt = ""
-        metafile = os.path.join(images_dir, "metadata.jsonl")
-        with open(metafile, "r") as f:
-            lines = f.readlines()
-            prompt = json.loads(lines[0])["prompt"]
-            instance_prompt = prompt.split(",")[0]
-            
+        instance_prompt = f"photo of a {cfg_args.token_abstraction} {cfg_args.class_prompt}"
         if cfg_args.validation_prompt and instance_prompt:
             validation_prompt = f'{instance_prompt}, {cfg_args.validation_prompt}'
             validation_epochs = cfg_args.num_train_epochs // 10
@@ -141,27 +135,10 @@ def train_process(cfg_args):
             f.write(f"cmd: {cmdstr}\n")
     return 0
 
-def infer_after(args):
-    work_dir = args.work_dir
-    dirlist = []
-    if args.subset:
-        dirlist = args.subset.split(",")
-    else:
-        dirlist = os.listdir(work_dir)
-    dirlist = sorted(dirlist)
-    for instance in dirlist:
-        sub_dir = os.path.join(work_dir, instance)
-        if not os.path.exists(sub_dir):
-            warnings.warn(f"Directory {sub_dir} does not exist")
-            continue
-
-        cmdstr = f'python inference.py'
-        cmdstr += f' --work_dir={sub_dir}'
-        if args.pretrained_model_name_or_path:
-            cmdstr += f' --pretrained_model_name_or_path="{args.pretrained_model_name_or_path}"'
-        print(f"{cmdstr}")
-        ret = os.system(cmdstr)
-    return 0
+def infer_after_train(args):
+    cmdstr = f'python sdxl_inference.py {args.cfg_file}'
+    ret = os.system(cmdstr)
+    return ret
 
 if __name__ == "__main__":
     args = parse_args()

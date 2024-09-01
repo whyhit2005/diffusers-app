@@ -17,11 +17,13 @@ logger.addHandler(logging.StreamHandler(sys.stdout))
 from omegaconf import OmegaConf
 import yaml
 
+
 def parse_args(input_args=None):
-    parser = argparse.ArgumentParser(description="Simple example of a sdxl text to images script.")
+    parser = argparse.ArgumentParser(description="sdxl text to images script.")
     parser.add_argument("cfg_file", type=str,
                         help="config file")
     return parser.parse_args(input_args)
+
 
 def load_config_yaml(args):
     with open(args.cfg_file, "r") as f:
@@ -60,6 +62,7 @@ def load_base_model(cfg_args):
     # pipe.enable_freeu(s1=0.9, s2=0.2, b1=1.3, b2=1.4)
     return pipe
 
+
 def infer(model_dir, sample_dir, prompt_list, cfg_args):
     pipe = load_base_model(cfg_args)
     pipe.load_lora_weights(
@@ -93,30 +96,30 @@ def infer(model_dir, sample_dir, prompt_list, cfg_args):
     neg_emb_path = Path("/home/wangyh/sdxl_models/embedding/") / "negativeXL_D.safetensors"
     state_dict = load_file(str(neg_emb_path))
     neg_tokens = []
+    negative_prompt = ""
+    if cfg_args.negative_prompt:
+        negative_prompt += f"{cfg_args.negative_prompt}, "
     for i in range(state_dict["clip_l"].shape[0]):
         neg_tokens.append(f"<n{i}>")
     pipe.load_textual_inversion(state_dict["clip_l"], token=neg_tokens, text_encoder=pipe.text_encoder, tokenizer=pipe.tokenizer)
     pipe.load_textual_inversion(state_dict["clip_g"], token=neg_tokens, text_encoder=pipe.text_encoder_2, tokenizer=pipe.tokenizer_2)
-    negative_prompt = "".join(neg_tokens)
-    if cfg_args.negative_prompt:
-        negative_prompt += f"{cfg_args.negative_prompt}"
-        
+    negative_prompt += " ".join(neg_tokens)
+    
     num_sample = cfg_args.sample_num
     logger.info(f"Model:{sample_dir.parent.name} {model_dir.name}")
     generator = torch.Generator("cuda").manual_seed(cfg_args.seed)
     for i, item in enumerate(prompt_list):
-        prompt = item["prompt"]
-        seed = item["seed"]
+        prompt = item
         logger.info(f"{i} Prompt: {prompt}")
         images = pipe(
-                prompt=prompt, 
-                # negative_prompt=negative_prompt,
-                num_inference_steps=cfg_args.infer_steps, 
-                num_images_per_prompt = cfg_args.sample_num,
-                guidance_scale = 5.0,
-                # cross_attention_kwargs={"scale": 1.0},
-                height = 1024, width = 1024,
-                generator=generator,
+            prompt=prompt, 
+            # negative_prompt=negative_prompt,
+            num_inference_steps=cfg_args.infer_steps, 
+            num_images_per_prompt = cfg_args.sample_num,
+            guidance_scale = 5.0,
+            # cross_attention_kwargs={"scale": 1.0},
+            height = 1024, width = 1024,
+            generator=generator,
         ).images
         for j, image in enumerate(images):
             sample_path = sample_dir / f"{model_dir.name}-p{i:03d}-{j:03d}.png"
@@ -125,27 +128,23 @@ def infer(model_dir, sample_dir, prompt_list, cfg_args):
     pipe.unfuse_lora()
     pipe.unload_lora_weights()
     pipe.unload_textual_inversion()
-    
     del pipe
-    
+
+
 def main(cfg_args):
     if cfg_args.work_dir is None:
         raise ValueError("work directory is not set")
-    random.seed(0)
     prompt_list = []
-    if cfg_args.prompt_file:
+    if cfg_args.prompt_file is not None:
         with open(cfg_args.prompt_file, "r") as f:
             for line in f:
                 line = line.strip()
-                t = json.loads(line)
-                if "seed" not in t:
-                    t["seed"] = random.randint(int(1e6), int(1e7))
-                prompt_list.append(t)
+                if cfg_args.replace_word:
+                    replace_to = f'{cfg_args.token_abstraction} {cfg_args.class_prompt}'
+                    line = line.replace(cfg_args.replace_word, replace_to)
+                prompt_list.append(line)
     else:
-        prompt_list = [{
-            "prompt": cfg_args.prompt, 
-            "seed": random.randint(int(1e6), int(1e7))
-            }]
+        prompt_list = [cfg_args.prompt]
 
     work_dir = Path(cfg_args.work_dir)
     dirlist = None
@@ -167,7 +166,7 @@ def main(cfg_args):
             model_dir = cdir / f"{cfg_args.model_dir_name}-{cfg_args.task_name}"
         else:
             model_dir = cdir / cfg_args.model_dir_name
-        if cfg_args.checkpoint:
+        if cfg_args.checkpoint is not None:
             checkpoint_dirs = list(model_dir.glob("checkpoint*"))
             checkpoint_dirs = sorted(checkpoint_dirs)
             start_i = cfg_args.checkpoint % len(checkpoint_dirs)
@@ -187,6 +186,7 @@ def main(cfg_args):
         for mdir in model_dirs:
             infer(mdir, sample_dir, prompt_list, cfg_args)
     return 0
+
 
 if __name__ == "__main__":
     args = parse_args()

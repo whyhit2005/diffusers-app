@@ -1559,7 +1559,7 @@ def main(args):
         r=args.rank,
         lora_alpha=args.rank,
         use_dora=args.use_dora,
-        use_rslora=True,
+        # use_rslora=True,
         init_lora_weights="gaussian",
         target_modules=rank_pattern.keys(),
         rank_pattern=rank_pattern,
@@ -1574,7 +1574,7 @@ def main(args):
         text_lora_config = LoraConfig(
             r=args.rank,
             use_dora=args.use_dora,
-            use_rslora=True,
+            # use_rslora=True,
             lora_alpha=args.rank,
             init_lora_weights="gaussian",
             target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],

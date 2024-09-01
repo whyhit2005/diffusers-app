@@ -10,9 +10,28 @@ import warnings
 from pathlib import Path
 import re
 import wd14_tagger
+import logging
+logging.basicConfig(level=logging.INFO)
+from omegaconf import OmegaConf
+import yaml
 
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".PNG", ".JPG", ".JPEG", ".WEBP", ".BMP"]
 
+def parse_args(input_args=None):
+    parser = argparse.ArgumentParser(description="prepare data for training")
+    parser.add_argument("cfg_file", type=str,
+                        help="config file")
+    return parser.parse_args(input_args)
+
+def load_config_yaml(args):
+    with open(args.cfg_file, "r") as f:
+        cfg_data = yaml.safe_load(f)
+        t_data = {}
+        t_data.update(cfg_data["base"])
+        t_data.update(cfg_data["prepare"])
+        cfg_args = OmegaConf.create(t_data)
+        return cfg_args
+    
 def glob_images_pathlib(dir_path, recursive):
     image_paths = []
     if recursive:
@@ -59,28 +78,33 @@ def blip_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefi
             outfile.write('\n')
 
 
-def wd14_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefix):
+def wd14_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefix, extra_black_words=None):
     wd14args.desc = instance_prompt
     tag_results = wd14_tagger.tag_images(wd14_model, wd14_all_tags, imgs_and_paths, wd14args)
     tag_black_list = [
-    "eye", "lip", "nose", "ear", "mouth", "teeth", "tongue", "neck",
-    "blurry",
+    "eye", "eyes", "lip", "nose", "ear", "mouth", "teeth", "tongue", "neck",
+    "blurry", "hair", "bald", "face", "skin", "head", "body",
+    "buzz_cut", "mohawk", "ponytail",
     ]
+    if extra_black_words is not None:
+        tag_black_list.extend(extra_black_words)
     pstr = r"|".join(tag_black_list)
     pattern = re.compile(pstr, re.IGNORECASE)
     
-    freqdict = {}
+    freqall = {}
     for img_path, tags in tag_results:
         tokens = tags.split(", ")
         for token in tokens:
-            if token not in freqdict:
-                freqdict[token] = 0
-            freqdict[token] += 1
-    freqfile = output_dir.parent / "freq.log"
+            if token not in freqall:
+                freqall[token] = 0
+            freqall[token] += 1
+    freqfile = output_dir.parent / "freqall.log"
     with open(freqfile, "w") as f:
-        freqlist = sorted(freqdict.items(), key=lambda x: x[1], reverse=True)
+        freqlist = sorted(freqall.items(), key=lambda x: x[1], reverse=True)
         for token, freq in freqlist:
             f.write(f"{token}: {freq}\n")
+    
+    freqs = {}
     tlist = []
     for img_path, tags in tag_results:
         if img_path.stem.endswith("_face"):
@@ -93,14 +117,18 @@ def wd14_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefi
             pres = pattern.search(token)
             if pres is not None:
                 continue
-            # if freqdict[token] > 0.7*len(tag_results):
-            #     continue
             out_tokens.append(token)
-            if token not in freqdict:
-                freqdict[token] = 0
-            freqdict[token] += 1
+            if token not in freqs:
+                freqs[token] = 0
+            freqs[token] += 1
         out_tag = ", ".join(out_tokens)
         tlist.append((img_path, out_tag))
+        
+    freqfile = output_dir.parent / "freqs.log"
+    with open(freqfile, "w") as f:
+        freqlist = sorted(freqs.items(), key=lambda x: x[1], reverse=True)
+        for token, freq in freqlist:
+            f.write(f"{token}: {freq}\n")
 
     with open(output_dir / 'metadata.jsonl', 'w') as outfile:
         for img_path, out_tag in tlist:
@@ -109,72 +137,53 @@ def wd14_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefi
             json.dump(entry, outfile)
             outfile.write('\n')
 
-def parse_args(input_args=None):
-    parser = argparse.ArgumentParser(description="Simple example of a training script.")
-    parser.add_argument("--instance_dir", type=str, 
-                        default=None, required=True,
-                        help="orign instance images path")
-    parser.add_argument("--subfolders", action="store_true",
-                        help="process subfolders")
-    parser.add_argument("--class_prompt", type=str,
-                        default="", required=True,
-                        help="regular class name")
-    parser.add_argument("--output", type=str,
-                        default=None, required=True,
-                        help="output path")
-    parser.add_argument("--interrogator", type=str,
-                        default="wd14",
-                        help="interrogator")
-    parser.add_argument("--caption_prefix", type=str,
-                        default="photo of a",
-                        help="caption prefix")
-    parser.add_argument("--init_new", action="store_true",
-                        default=False,
-                        help="initialize new training")
+  
+def main(cfg_args):
+    if cfg_args.instance_image_dir is None:
+        raise ValueError("instance_dir is not set")
     
-    return parser.parse_args(input_args)
-    
-def main(args, wd14args = None):
-    instance_dir = Path(args.instance_dir)
-    output_dir = Path(args.output)
-    class_prompt = args.class_prompt
-    caption_prefix = args.caption_prefix
-    
+    instance_dir = Path(cfg_args.instance_image_dir)
+    work_dir = Path(cfg_args.work_dir)
+
     dir_list = []
-    if args.subfolders:
+    if cfg_args.subfolders:
         dir_list = list(instance_dir.iterdir())
     else:
         dir_list = [instance_dir]
     dir_list = sorted(dir_list, key=lambda x: x.name)
     
+    instance = cfg_args.token_abstraction
+    class_prompt = cfg_args.class_prompt
+    caption_prefix = cfg_args.caption_prefix
     for tdir in dir_list:
-        instance = "<s0><s1>"
+        logging.info(f"Processing {tdir.name}")
         instance_prompt = f"{instance} {class_prompt}"
         imgs_and_paths = read_data(tdir)
-        image_dir = output_dir / tdir.name / "images"
-        if args.init_new and os.path.exists(output_dir):
+        image_dir = work_dir / tdir.name / cfg_args.images_dir_name
+        if cfg_args.init_new and os.path.exists(image_dir):
             shutil.rmtree(image_dir, ignore_errors=True)
         image_dir.mkdir(parents=True, exist_ok=True)
-        if args.interrogator == "blip":
+        if cfg_args.interrogator == "blip":
             blip_prepare_data(imgs_and_paths, image_dir, instance_prompt, caption_prefix)
-        elif args.interrogator == "wd14":
-            wd14_prepare_data(imgs_and_paths, image_dir, instance_prompt, caption_prefix)
+        elif cfg_args.interrogator == "wd14":
+            wd14_prepare_data(imgs_and_paths, image_dir, instance_prompt, caption_prefix, cfg_args.extra_black_words)
     return 0
 
 if __name__ == "__main__":
     args = parse_args()
+    cfg_args = load_config_yaml(args)
     
-    if args.interrogator == "blip":
+    if cfg_args.interrogator == "blip":
         device = "cuda" if torch.cuda.is_available() else "cpu"
         blip_processor = AutoProcessor.from_pretrained("Salesforce/blip2-opt-2.7b-coco")
         blip_model = Blip2ForConditionalGeneration.from_pretrained("Salesforce/blip2-opt-2.7b-coco", torch_dtype=torch.float16)
         blip_model = blip_model.to(device)
-        ret = main(args)
-    elif args.interrogator == "wd14":
+        ret = main(cfg_args)
+    elif cfg_args.interrogator == "wd14":
         wd14args = wd14_tagger.ImageTaggerArgs()
         wd14args.undesired_tags = "1girl,1boy,1women,1man,1person,child,solo"
         wd14_model, wd14_all_tags = wd14_tagger.load_model_and_tags(wd14args)
-        ret = main(args, wd14args)
+        ret = main(cfg_args)
     else:
         raise NotImplementedError("Integrator not implemented")
     sys.exit(ret)
