@@ -115,6 +115,8 @@ def train_process(cfg_args):
         cmdstr += f' --checkpoints_total_limit=2 \\\n'
         cmdstr += f' --checkpointing_steps={cfg_args.checkpointing_steps} \\\n'
         cmdstr += f' --resume_from_checkpoint=latest \\\n'
+        if "lora_unet_blocks" in cfg_args and cfg_args.lora_unet_blocks:
+            cmdstr += f' --lora_unet_blocks={cfg_args.lora_unet_blocks} \\\n'
         cmdstr += f' --allow_tf32 \\\n'
         cmdstr += f' --enable_xformers_memory_efficient_attention \\\n'
         cmdstr += f' --seed={cfg_args.seed}'
@@ -144,6 +146,8 @@ if __name__ == "__main__":
     args = parse_args()
     cfg_args = load_config_yaml(args)
     ret = train_process(cfg_args)
-    # if ret == 0:
-    #     ret = infer_after(args)
+    if ret == 0:
+        ret = infer_after_train(args)
+    else:
+        warnings.warn("Training failed")
     sys.exit(ret)

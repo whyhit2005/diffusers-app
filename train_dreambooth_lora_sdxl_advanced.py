@@ -850,31 +850,30 @@ def parse_args(input_args=None):
 
 
 # Taken (and slightly modified) from B-LoRA repo https://github.com/yardenfren1996/B-LoRA/blob/main/blora_utils.py
-def is_belong_to_blocks(key, blocks):
+def is_belong_to_blocks(key, blocks, target_names):
     try:
         for g in blocks:
-            if g in key:
-                return True
+            for target_name in target_names:
+                if g in key and target_name in key:
+                    return True
         return False
     except Exception as e:
         raise type(e)(f"failed to is_belong_to_block, due to: {e}")
 
 
-def get_unet_lora_target_modules(unet, use_blora, target_blocks=None):
+def get_unet_lora_target_modules(unet, use_blora, target_names, target_blocks=None):
     if use_blora:
         content_b_lora_blocks = "unet.up_blocks.0.attentions.0"
         style_b_lora_blocks = "unet.up_blocks.0.attentions.1"
         target_blocks = [content_b_lora_blocks, style_b_lora_blocks]
     try:
         blocks = [(".").join(blk.split(".")[1:]) for blk in target_blocks]
-
-        attns = [
-            attn_processor_name.rsplit(".", 1)[0]
-            for attn_processor_name, _ in unet.attn_processors.items()
-            if is_belong_to_blocks(attn_processor_name, blocks)
+        
+        target_modules = [
+            unet_name for unet_name, _ in unet.named_modules() 
+            if is_belong_to_blocks(unet_name, blocks, target_names)
         ]
 
-        target_modules = [f"{attn}.{mat}" for mat in ["to_k", "to_q", "to_v", "to_out.0"] for attn in attns]
         return target_modules
     except Exception as e:
         raise type(e)(
@@ -1538,28 +1537,32 @@ def main(args):
 
     # now we will add new LoRA weights to the attention layers
 
+    target_names = ["to_k", "to_q", "to_v", "to_out.0"]
+    rank_pattern = {
+        "to_k":args.rank, "to_q":args.rank, "to_v":args.rank, "to_out.0":args.rank
+        }
+    if args.conv_rank > 0:
+        target_names += ["conv1", "conv2", "conv_shortcut"]
+        rank_pattern.update(
+            {"conv1": args.conv_rank, "conv2": args.conv_rank,
+            "conv_shortcut": args.conv_rank,}
+        )
     if args.use_blora:
         # if using B-LoRA, the targeted blocks to train are automatically set
-        target_modules = get_unet_lora_target_modules(unet, use_blora=True)
+        target_modules = get_unet_lora_target_modules(unet, use_blora=True, target_names=target_names)
     elif args.lora_unet_blocks:
         # if training specific unet blocks not in the B-LoRA scheme
         target_blocks_list = "".join(args.lora_unet_blocks.split()).split(",")
         logger.info(f"list of unet blocks to train: {target_blocks_list}")
-        target_modules = get_unet_lora_target_modules(unet, use_blora=False, target_blocks=target_blocks_list)
+        target_modules = get_unet_lora_target_modules(unet, use_blora=False, target_names=target_names, target_blocks=target_blocks_list)
     else:
-        target_modules = ["to_k", "to_q", "to_v", "to_out.0"]
-    rank_v = [args.rank]*len(target_modules)
-    rank_pattern = dict(zip(target_modules, rank_v))
-    if args.conv_rank > 0:
-        rank_pattern.update(
-            {"conv1": args.conv_rank, "conv2": args.conv_rank,
-            "conv_shortcut": args.conv_rank,}
-            )
+        #target_modules = ["to_k", "to_q", "to_v", "to_out.0"]
+        target_modules = target_names
+
     unet_lora_config = LoraConfig(
         r=args.rank,
         lora_alpha=args.rank,
         use_dora=args.use_dora,
-        # use_rslora=True,
         init_lora_weights="gaussian",
         target_modules=rank_pattern.keys(),
         rank_pattern=rank_pattern,
@@ -1574,7 +1577,6 @@ def main(args):
         text_lora_config = LoraConfig(
             r=args.rank,
             use_dora=args.use_dora,
-            # use_rslora=True,
             lora_alpha=args.rank,
             init_lora_weights="gaussian",
             target_modules=["q_proj", "k_proj", "v_proj", "out_proj"],
