@@ -52,8 +52,12 @@ def load_base_model(cfg_args):
             use_safetensors=True
         )
     if cfg_args.add_vae:
-        vae = AutoencoderKL.from_pretrained(
-            cfg_args.pretrained_vae_model_name_or_path, torch_dtype=torch.float16)
+        if Path(cfg_args.pretrained_vae_model_name_or_path).is_file():
+            vae = AutoencoderKL.from_single_file(
+                cfg_args.pretrained_vae_model_name_or_path, torch_dtype=torch.float16)
+        else:
+            vae = AutoencoderKL.from_pretrained(
+                cfg_args.pretrained_vae_model_name_or_path, torch_dtype=torch.float16)
         pipe.vae = vae
         
     pipe = pipe.to("cuda")
@@ -63,14 +67,15 @@ def load_base_model(cfg_args):
     return pipe
 
 
-def infer(model_dir, sample_dir, prompt_list, cfg_args):
+def infer(sample_dir, prompt_list, cfg_args, model_dir):
     pipe = load_base_model(cfg_args)
     pipe.load_lora_weights(
         str(model_dir), 
         weight_name="pytorch_lora_weights.safetensors",
         adapter_name="custom")
     pipe.fuse_lora(lora_scale=1.0)
-    
+    logger.info(f"Model:{str(model_dir)} loaded")
+
     # pipe.load_lora_weights(
     #     "/home/wangyh/sdxl_models/lora/", 
     #     weight_name="mengwa.safetensors",
@@ -81,7 +86,7 @@ def infer(model_dir, sample_dir, prompt_list, cfg_args):
     #     adapter_name="extra")
     # pipe.set_adapters(["custom", "extra"], adapter_weights=[1.0, 1.0])
     # pipe.fuse_lora(adapter_names=["custom", "extra"], lora_scale=1.0)
-    
+
     text_encoders = [pipe.text_encoder, pipe.text_encoder_2]
     tokenizers = [pipe.tokenizer, pipe.tokenizer_2]
     embedding_path = model_dir/"pytorch_lora_emb.safetensors"
@@ -89,11 +94,15 @@ def infer(model_dir, sample_dir, prompt_list, cfg_args):
         embedding_path = model_dir / ".." / "pytorch_lora_emb.safetensors"
     state_dict = load_file(str(embedding_path))
     # load embeddings of text_encoder 1 (CLIP ViT-L/14)
-    pipe.load_textual_inversion(state_dict["clip_l"], token=["<s0>", "<s1>"], text_encoder=pipe.text_encoder, tokenizer=pipe.tokenizer)
+    pipe.load_textual_inversion(
+        state_dict["clip_l"], token=["<s0>", "<s1>"], text_encoder=pipe.text_encoder, 
+        tokenizer=pipe.tokenizer)
     # load embeddings of text_encoder 2 (CLIP ViT-G/14)
-    pipe.load_textual_inversion(state_dict["clip_g"], token=["<s0>", "<s1>"], text_encoder=pipe.text_encoder_2, tokenizer=pipe.tokenizer_2)
+    pipe.load_textual_inversion(
+        state_dict["clip_g"], token=["<s0>", "<s1>"], text_encoder=pipe.text_encoder_2, 
+        tokenizer=pipe.tokenizer_2)
     
-    neg_emb_path = Path("/home/wangyh/sdxl_models/embedding/") / "negativeXL_D.safetensors"
+    neg_emb_path = Path("/home/wangyh/sdxl_models/embedding") / "negativeXL_D.safetensors"
     state_dict = load_file(str(neg_emb_path))
     neg_tokens = []
     negative_prompt = ""
@@ -113,10 +122,10 @@ def infer(model_dir, sample_dir, prompt_list, cfg_args):
         logger.info(f"{i} Prompt: {prompt}")
         images = pipe(
             prompt=prompt, 
-            # negative_prompt=negative_prompt,
+            negative_prompt=negative_prompt,
             num_inference_steps=cfg_args.infer_steps, 
             num_images_per_prompt = cfg_args.sample_num,
-            guidance_scale = 5.0,
+            guidance_scale = 7.0,
             # cross_attention_kwargs={"scale": 1.0},
             height = 1024, width = 1024,
             generator=generator,
@@ -130,21 +139,33 @@ def infer(model_dir, sample_dir, prompt_list, cfg_args):
     pipe.unload_textual_inversion()
     del pipe
 
+def read_prompt_file(cfg_args):
+    prompt_list = []
+    with open(cfg_args.prompt_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if cfg_args.replace_word:
+                replace_to = f'({cfg_args.token_abstraction})1.2 {cfg_args.class_prompt}'
+                line = line.replace(cfg_args.replace_word, replace_to)
+            prompt_list.append(line)
+    return prompt_list
+
 
 def main(cfg_args):
     if cfg_args.work_dir is None:
         raise ValueError("work directory is not set")
+    if cfg_args.task_name is None:
+        raise ValueError("task name is not set")
+    if cfg_args.sample_task_name is None:
+        raise ValueError("sample task name is not set")
+    
     prompt_list = []
     if cfg_args.prompt_file is not None:
-        with open(cfg_args.prompt_file, "r") as f:
-            for line in f:
-                line = line.strip()
-                if cfg_args.replace_word:
-                    replace_to = f'{cfg_args.token_abstraction} {cfg_args.class_prompt}'
-                    line = line.replace(cfg_args.replace_word, replace_to)
-                prompt_list.append(line)
-    else:
+        prompt_list = read_prompt_file(cfg_args)
+    elif cfg_args.prompt is not None:
         prompt_list = [cfg_args.prompt]
+    else:
+        raise ValueError("prompt or file is not set")
 
     work_dir = Path(cfg_args.work_dir)
     dirlist = None
@@ -162,10 +183,8 @@ def main(cfg_args):
     dirlist = sorted(dirlist, key=lambda x: x.name)
     for cdir in dirlist:
         instance_token = cdir.name.split("-")[-1]
-        if cfg_args.task_name:
-            model_dir = cdir / f"{cfg_args.model_dir_name}-{cfg_args.task_name}"
-        else:
-            model_dir = cdir / cfg_args.model_dir_name
+        model_dir = cdir / f"{cfg_args.model_dir_name}" /f"{cfg_args.task_name}"
+
         if cfg_args.checkpoint is not None:
             checkpoint_dirs = list(model_dir.glob("checkpoint*"))
             checkpoint_dirs = sorted(checkpoint_dirs)
@@ -175,16 +194,15 @@ def main(cfg_args):
         else:
             model_dirs = [model_dir]
         
-        if cfg_args.task_name:
-            sample_dir = cdir / f"{cfg_args.sample_dir_name}-{cfg_args.task_name}"
-        else:
-            sample_dir = cdir / cfg_args.sample_dir_name
+        sample_dir = cdir / f"{cfg_args.sample_dir_name}"
+        sample_dir = sample_dir / f"{cfg_args.task_name}" /f"{cfg_args.sample_task_name}"
+        
         if cfg_args.init_new:
             shutil.rmtree(str(sample_dir), ignore_errors=True)
         sample_dir.mkdir(parents=True, exist_ok=True)
         
         for mdir in model_dirs:
-            infer(mdir, sample_dir, prompt_list, cfg_args)
+            infer(sample_dir, prompt_list, cfg_args, model_dir=mdir)
     return 0
 
 

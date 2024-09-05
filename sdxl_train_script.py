@@ -30,6 +30,8 @@ def load_config_yaml(args):
 def train_process(cfg_args):
     if not cfg_args.work_dir:
         raise ValueError("work_dir is not set")
+    if not cfg_args.task_name:
+        raise ValueError("task_name is not set")
     
     work_dir = Path(cfg_args.work_dir)
     dirlist = []
@@ -41,10 +43,7 @@ def train_process(cfg_args):
 
     for tdir in dirlist:
         token_abstraction = cfg_args.token_abstraction
-        if cfg_args.task_name:
-            model_dir = tdir / f"{cfg_args.model_dir_name}-{cfg_args.task_name}"
-        else:
-            model_dir = tdir / cfg_args.model_dir_name
+        model_dir = tdir/ f"{cfg_args.model_dir_name}"/ f"{cfg_args.task_name}"
         images_dir = tdir / cfg_args.images_dir_name
         logging_dir = tdir / "logs"
         
@@ -74,6 +73,7 @@ def train_process(cfg_args):
         cmdstr += f' --pretrained_model_name_or_path={cfg_args.pretrained_model_name_or_path} \\\n'
         if cfg_args.add_vae:
             cmdstr += f' --pretrained_vae_model_name_or_path={pretrained_vae_model_name_or_path} \\\n'
+        # cmdstr += f' --variant=fp16 \\\n'
         cmdstr += f' --dataset_name={images_dir} \\\n'
         cmdstr += f' --instance_prompt=\"{instance_prompt}\" \\\n'
         cmdstr += f' --token_abstraction=\"{token_abstraction}\" \\\n'

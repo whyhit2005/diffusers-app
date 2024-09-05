@@ -57,7 +57,7 @@ def read_data(instance_dir):
     return imgs_and_paths
 
 # load the processor and the captioning model
-def blip_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefix):
+def blip_prepare_data(imgs_and_paths, output_dir, caption_prompt):
     # captioning utility
     def caption_images(input_image):
         inputs = blip_processor(images=input_image, return_tensors="pt").to(device, torch.float16)
@@ -68,8 +68,8 @@ def blip_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefi
         return generated_caption
     
     with open(output_dir / 'metadata.jsonl', 'w') as outfile:
-        for image, path in tqdm(imgs_and_paths, desc=f"{instance_prompt}"):
-            caption = f"{caption_prefix} {instance_prompt}"
+        for image, path in tqdm(imgs_and_paths, desc=f"{caption_prompt}"):
+            caption = caption_prompt
             caption += ", "+caption_images(image).split("\n")[0]
             tarpath = output_dir / path.name
             shutil.copy(path, tarpath)
@@ -78,8 +78,8 @@ def blip_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefi
             outfile.write('\n')
 
 
-def wd14_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefix, extra_black_words=None):
-    wd14args.desc = instance_prompt
+def wd14_prepare_data(imgs_and_paths, output_dir, caption_prompt, extra_black_words=None):
+    wd14args.desc = caption_prompt.split(",")[0]
     tag_results = wd14_tagger.tag_images(wd14_model, wd14_all_tags, imgs_and_paths, wd14args)
     tag_black_list = [
     "eye", "eyes", "lip", "nose", "ear", "mouth", "teeth", "tongue", "neck",
@@ -107,12 +107,8 @@ def wd14_prepare_data(imgs_and_paths, output_dir, instance_prompt, caption_prefi
     freqs = {}
     tlist = []
     for img_path, tags in tag_results:
-        if img_path.stem.endswith("_face"):
-            pcaption = "portrait of a"
-        else:
-            pcaption = caption_prefix
         tokens = tags.split(", ")
-        out_tokens = [f"{pcaption} {instance_prompt}"]
+        out_tokens = [caption_prompt]
         for token in tokens:
             pres = pattern.search(token)
             if pres is not None:
@@ -155,18 +151,20 @@ def main(cfg_args):
     instance = cfg_args.token_abstraction
     class_prompt = cfg_args.class_prompt
     caption_prefix = cfg_args.caption_prefix
+    caption_prompt = f"{caption_prefix} {instance} {class_prompt}"
+    if cfg_args.additional_caption is not None:
+        caption_prompt += f", {cfg_args.additional_caption}"
     for tdir in dir_list:
         logging.info(f"Processing {tdir.name}")
-        instance_prompt = f"{instance} {class_prompt}"
         imgs_and_paths = read_data(tdir)
         image_dir = work_dir / tdir.name / cfg_args.images_dir_name
         if cfg_args.init_new and os.path.exists(image_dir):
             shutil.rmtree(image_dir, ignore_errors=True)
         image_dir.mkdir(parents=True, exist_ok=True)
         if cfg_args.interrogator == "blip":
-            blip_prepare_data(imgs_and_paths, image_dir, instance_prompt, caption_prefix)
+            blip_prepare_data(imgs_and_paths, image_dir, caption_prompt)
         elif cfg_args.interrogator == "wd14":
-            wd14_prepare_data(imgs_and_paths, image_dir, instance_prompt, caption_prefix, cfg_args.extra_black_words)
+            wd14_prepare_data(imgs_and_paths, image_dir, caption_prompt, extra_black_words=cfg_args.extra_black_words)
     return 0
 
 if __name__ == "__main__":

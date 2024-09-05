@@ -281,7 +281,7 @@ class ImageTaggerArgs:
         self.repo_id = DEFAULT_WD14_TAGGER_REPO
         self.model_dir = "wd14_tagger_model"
         self.force_download = False
-        self.thresh = 0.35
+        self.thresh = 0.4
         self.general_threshold = self.thresh
         self.character_threshold = self.thresh
         self.recursive = False

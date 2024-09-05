@@ -1444,6 +1444,7 @@ def main(args):
         subfolder="vae" if args.pretrained_vae_model_name_or_path is None else None,
         revision=args.revision,
         variant=args.variant,
+        use_safetensors=True
     )
     latents_mean = latents_std = None
     if hasattr(vae.config, "latents_mean") and vae.config.latents_mean is not None:
@@ -1452,7 +1453,7 @@ def main(args):
         latents_std = torch.tensor(vae.config.latents_std).view(1, 4, 1, 1)
 
     unet = UNet2DConditionModel.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant
+        args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, variant=args.variant, use_safetensors=True
     )
 
     if args.train_text_encoder_ti:
